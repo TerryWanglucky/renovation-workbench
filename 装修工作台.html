@@ -139,6 +139,30 @@
     .pb-item{padding:2px 6px;font-size:12px}
   }
 
+  /* budget dimension progress bars */
+  .bdim{padding:6px 0}
+  .bdim-row{display:grid;grid-template-columns:70px 1fr 150px;gap:14px;align-items:center;margin-bottom:16px}
+  .bdim-row:last-child{margin-bottom:0}
+  .bdim-col-name{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bdim-col-bar{min-width:0}
+  .bdim-col-num{font-size:13px;color:var(--ink2);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  .bdim-col-num .over{color:#e03030;font-weight:700;margin-left:6px}
+  .bdim-ruler{position:relative;height:12px;margin-bottom:4px}
+  .bdim-ruler span{position:absolute;top:0;transform:translateX(-50%);font-size:10.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+  .bdim-ruler span:first-child{left:0;transform:none}
+  .bdim-ruler span:nth-child(2){left:25%}
+  .bdim-ruler span:nth-child(3){left:50%}
+  .bdim-ruler span:nth-child(4){left:75%}
+  .bdim-ruler span:last-child{left:100%;transform:translateX(-100%)}
+  .bdim-track{height:18px;background:var(--card2);border-radius:999px;overflow:hidden;display:flex;position:relative}
+  .bdim-green{height:100%;background:#2a9d4f;transition:width .25s ease}
+  .bdim-red{height:100%;background:#e03030;border-radius:0 999px 999px 0;transition:width .25s ease}
+  @media(max-width:680px){
+    .bdim-row{grid-template-columns:1fr;gap:4px;align-items:stretch;margin-bottom:18px}
+    .bdim-col-num{text-align:left}
+    .bdim-ruler{height:14px;margin-bottom:5px}
+  }
+
   /* gantt */
   .gantt-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:14px}
   .gantt{display:block}
@@ -790,13 +814,34 @@ function renderBDim(){
     map[k].budget+=(Number(b['预算金额'])||0); map[k].spent+=(Number(b['实际花销'])||0);
   });
   var keys=Object.keys(map);
-  var maxB=Math.max.apply(null,keys.map(function(k){return map[k].budget;}).concat([1]));
-  var html=keys.map(function(k){
-    var m=map[k]; var rate=m.budget?Math.round(m.spent/m.budget*100):0;
-    var over=m.spent>m.budget;
-    return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:5px"><span>'+esc(k)+'</span><span style="color:var(--ink2)">'+money(m.spent)+' / '+money(m.budget)+' · '+rate+'%</span></div>'
-      +'<div class="bar" style="max-width:none"><i style="width:'+(m.budget/maxB*100)+'%;background:'+(over?'var(--red)':'var(--sage)')+'"></i></div></div>';
-  }).join('');
+  var html='<div class="bdim">'+keys.map(function(k){
+    var m=map[k];
+    var rate=m.budget?Math.round(m.spent/m.budget*100):(m.spent?100:0);
+    var over=m.spent>m.budget || (m.budget===0 && m.spent>0);
+    var greenW,redW;
+    if(over){
+      // 超支时整体缩放，使绿色+红色完整显示在轨道内，避免越界
+      greenW=Math.round(100000/rate)/10;
+      redW=Math.round((rate-100)*1000/rate)/10;
+    } else {
+      greenW=rate; redW=0;
+    }
+    var greenRadius=over?'999px 0 0 999px':'999px';
+    return '<div class="bdim-row">'
+      +'<div class="bdim-col-name">'+esc(k)+'</div>'
+      +'<div class="bdim-col-bar">'
+      +'<div class="bdim-ruler"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>'
+      +'<div class="bdim-track">'
+      +'<div class="bdim-green" style="width:'+greenW+'%;border-radius:'+greenRadius+'"></div>'
+      +(over?'<div class="bdim-red" style="width:'+redW+'%"></div>':'')
+      +'</div></div>'
+      +'<div class="bdim-col-num">'
+      +(over?'<span style="color:#e03030">'+money(m.spent)+'</span>':money(m.spent))
+      +' / '+money(m.budget)+' · '
+      +(over?'<span style="color:#e03030">'+rate+'%</span>':rate+'%')
+      +'</div>'
+      +'</div>';
+  }).join('')+'</div>';
   document.getElementById('bDimView').innerHTML=html||'<div class="empty">暂无数据</div>';
 }
 function showOver(){
@@ -1084,7 +1129,8 @@ function reloadExamples(){
     localStorage.setItem('wb_reno_examples', JSON.stringify(exampleIds));
     localStorage.setItem('wb_reno_initialized','1');
     return loadAll();
-  }).then(function(){ rerender(); closeModal(); toast('已重新载入示例'); });
+  }).then(function(){ rerender(); closeModal(); toast('已重新载入示例'); })
+    .catch(function(err){ console.error('reloadExamples failed:', err); toast('载入失败：'+(err&&err.message?err.message:err)); });
 }
 
 /* ===== 导航 ===== */
