@@ -3,3 +3,4 @@
 本地部署/*.tmp
 node_modules/
 .workbuddy/
+.ssh/

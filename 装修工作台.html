@@ -123,6 +123,8 @@
   .sub-name{font-weight:600}
   .sub-name.done{text-decoration:line-through;color:var(--ink2)}
   .sub-dates{font-size:12px;color:var(--ink2);margin-top:2px}
+  .sub-owner{display:inline-flex;align-items:center;gap:5px;margin-top:5px;font-size:12.5px;color:var(--clay-d);background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:2px 10px;width:fit-content}
+  .sub-owner svg{width:13px;height:13px;flex:none}
 
   /* phase budget */
   .phase-budget{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:flex-start;padding:10px 0;margin-top:6px;border-top:1px dashed var(--line);font-size:13px;color:var(--red)}
@@ -367,7 +369,7 @@ var DB = {
 };
 var PHASES = ['设计','拆改','水电','泥木','油漆','安装','软装','完工'];
 var SCHEMA = {
-  tasks: { '名称':'text','阶段':'select','优先级':'select','分类':'text','截止日':'date','真实开始日':'date','真实完成日':'date','完成':'checkbox','备注':'text' },
+  tasks: { '名称':'text','阶段':'select','优先级':'select','分类':'text','责任人':'text','截止日':'date','真实开始日':'date','真实完成日':'date','完成':'checkbox','备注':'text' },
   budget: { '项目名称':'text','预算分类':'select','所属阶段':'select','预算金额':'number','实际花销':'number','备注':'text' },
   inspiration: { '标题':'text','风格标签':'multi_select','笔记':'text','描述':'text','图片':'image','收藏':'checkbox' },
   profile: { '风格':'text','面积':'number','户型':'text','总预算':'number','装修方式':'select','开工日期':'date' }
@@ -379,6 +381,9 @@ var OPTIONS = {
   profile: { '装修方式':['全包','半包','清包','DIY'] }
 };
 var FIELDS = { tasks:Object.keys(SCHEMA.tasks), budget:Object.keys(SCHEMA.budget), inspiration:Object.keys(SCHEMA.inspiration), profile:Object.keys(SCHEMA.profile) };
+// databaseId -> schema key（DB 存的是真实资料库 ID，SCHEMA/FIELDS/OPTIONS 用简短 key）
+var DB_KEY = {}; Object.keys(DB).forEach(function(k){ DB_KEY[DB[k]]=k; });
+function dbKey(id){ return DB_KEY[id] || id; }
 
 /* ===== 统一存储层：在线(SDK) / 离线(localStorage) ===== */
 /* 在线模式下 db 由平台注入 __SMART_PAGE__.database；databaseId 必须字面量（lint DSDK002） */
@@ -440,9 +445,20 @@ function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; 
 
 /* 规范化 SDK 返回值 → 可直接使用的对象；反向 toProps 转 PropertyValue */
 function normRow(dbId, raw){
-  var r={ _id: raw._id }; var t=SCHEMA[dbId];
-  FIELDS[dbId].forEach(function(f){
-    var v=raw[f]; var ty=t[f];
+  var key=dbKey(dbId); var r={ _id: raw._id }; var t=SCHEMA[key];
+  FIELDS[key].forEach(function(f){
+    var rawv=raw[f]; var ty=t[f];
+    // 同时兼容 PropertyValue 对象（离线 localStorage / SDK）和普通值
+    var v=rawv;
+    if(rawv!==undefined && rawv!==null && typeof rawv==='object'){
+      if(ty==='number' && 'number' in rawv) v=rawv.number;
+      else if(ty==='checkbox' && 'checkbox' in rawv) v=rawv.checkbox;
+      else if(ty==='date' && 'date' in rawv) v=rawv.date;
+      else if(ty==='multi_select' && 'multi_select' in rawv) v=rawv.multi_select;
+      else if(ty==='image' && 'image' in rawv) v=(rawv.image && rawv.image.images)||[];
+      else if('text' in rawv) v=rawv.text;
+      else if('select' in rawv) v=rawv.select;
+    }
     if(v===undefined||v===null){ r[f]= (ty==='number'?0:(ty==='multi_select'||ty==='image'?[]:(ty==='checkbox'?false:''))); }
     else if(ty==='date'){ r[f]=String(v).slice(0,10); }
     else if(ty==='number'){ r[f]=Number(v)||0; }
@@ -454,8 +470,8 @@ function normRow(dbId, raw){
   return r;
 }
 function toProps(dbId, obj){
-  var p={}, t=SCHEMA[dbId];
-  FIELDS[dbId].forEach(function(f){
+  var key=dbKey(dbId); var p={}, t=SCHEMA[key];
+  FIELDS[key].forEach(function(f){
     if(!(f in obj)) return; var v=obj[f]; var ty=t[f];
     if(ty==='number') p[f]={number:Number(v)||0};
     else if(ty==='checkbox') p[f]={checkbox:!!v};
@@ -477,16 +493,23 @@ function seedExamples(){
   var t=new Date();
   function d(off){ var x=new Date(t); x.setDate(x.getDate()+off); return x.getFullYear()+'-'+pad(x.getMonth()+1)+'-'+pad(x.getDate()); }
   var tasks=[
-    { '名称':'确认平面布局方案','阶段':'设计','优先级':'P0','分类':'设计','真实开始日':d(-16),'真实完成日':d(-7),'完成':true,'备注':'与设计师对齐收纳' },
-    { '名称':'墙体拆除','阶段':'拆改','优先级':'P1','分类':'拆改','真实开始日':d(-6),'真实完成日':d(-3),'完成':true,'备注':'' },
-    { '名称':'水电点位交底','阶段':'水电','优先级':'P0','分类':'水电','真实开始日':d(-2),'截止日':d(3),'完成':false,'备注':'现场定位' },
-    { '名称':'联系商家确认瓷砖到货时间','阶段':'','优先级':'P1','分类':'联系商家','截止日':d(-7),'完成':false,'备注':'逾期示例' },
-    { '名称':'预约橱柜复尺','阶段':'','优先级':'P2','分类':'预约','截止日':d(8),'完成':false,'备注':'' },
-    { '名称':'泥木进场施工','阶段':'泥木','优先级':'P1','分类':'泥木','真实开始日':d(4),'完成':false,'备注':'' },
-    { '名称':'油漆完工验收','阶段':'油漆','优先级':'P2','分类':'油漆','完成':false,'备注':'' },
-    { '名称':'灯具安装','阶段':'安装','优先级':'P2','分类':'安装','完成':false,'备注':'' },
-    { '名称':'软装家具进场','阶段':'软装','优先级':'P2','分类':'软装','完成':false,'备注':'' }
+    { '名称':'确认平面布局方案','阶段':'设计','优先级':'P0','分类':'设计','责任人':'设计师·王','真实开始日':d(-16),'真实完成日':d(-7),'完成':true,'备注':'与设计师对齐收纳' },
+    { '名称':'墙体拆除','阶段':'拆改','优先级':'P1','分类':'拆改','责任人':'工长·李','真实开始日':d(-6),'真实完成日':d(-3),'完成':true,'备注':'' },
+    { '名称':'水电点位交底','阶段':'水电','优先级':'P0','分类':'水电','责任人':'水电·张师傅','真实开始日':d(-2),'截止日':d(3),'完成':false,'备注':'现场定位' },
+    { '名称':'联系商家确认瓷砖到货时间','阶段':'','优先级':'P1','分类':'联系商家','责任人':'业主·自己','截止日':d(-7),'完成':false,'备注':'逾期示例' },
+    { '名称':'预约橱柜复尺','阶段':'','优先级':'P2','分类':'预约','责任人':'橱柜商家','截止日':d(8),'完成':false,'备注':'' },
+    { '名称':'泥木进场施工','阶段':'泥木','优先级':'P1','分类':'泥木','责任人':'工长·李','真实开始日':d(4),'完成':false,'备注':'' },
+    { '名称':'油漆完工验收','阶段':'油漆','优先级':'P2','分类':'油漆','责任人':'油漆·赵师傅','完成':false,'备注':'' },
+    { '名称':'灯具安装','阶段':'安装','优先级':'P2','分类':'安装','责任人':'安装·刘师傅','完成':false,'备注':'' },
+    { '名称':'软装家具进场','阶段':'软装','优先级':'P2','分类':'软装','责任人':'业主·自己','完成':false,'备注':'' }
   ];
+  // 适量测试数据：让各阶段都有两条，演示更直观
+  tasks.push(
+    { '名称':'确认主材色卡与清单','阶段':'设计','优先级':'P1','分类':'设计','责任人':'设计师·王','真实开始日':d(-14),'真实完成日':d(-9),'完成':true,'备注':'' },
+    { '名称':'水电隐蔽工程验收','阶段':'水电','优先级':'P0','分类':'水电','责任人':'监理·陈','真实开始日':d(0),'截止日':d(4),'完成':false,'备注':'打压测试' },
+    { '名称':'瓷砖铺贴与美缝','阶段':'泥木','优先级':'P1','分类':'泥木','责任人':'泥工·周师傅','真实开始日':d(5),'完成':false,'备注':'' },
+    { '名称':'墙面基层找平','阶段':'油漆','优先级':'P2','分类':'油漆','责任人':'油漆·赵师傅','完成':false,'备注':'' }
+  );
   var budget=[
     { '项目名称':'全屋设计','预算分类':'设计费','所属阶段':'设计','预算金额':8000,'实际花销':8000,'备注':'' },
     { '项目名称':'拆改人工','预算分类':'人工','所属阶段':'拆改','预算金额':5000,'实际花销':6200,'备注':'含垃圾清运' },
@@ -496,12 +519,19 @@ function seedExamples(){
     { '项目名称':'中央空调','预算分类':'家电','所属阶段':'安装','预算金额':20000,'实际花销':20000,'备注':'' },
     { '项目名称':'墙面油漆','预算分类':'硬装','所属阶段':'油漆','预算金额':6000,'实际花销':5500,'备注':'' }
   ];
+  budget.push(
+    { '项目名称':'瓷砖铺贴人工','预算分类':'人工','所属阶段':'泥木','预算金额':6000,'实际花销':5800,'备注':'含美缝' },
+    { '项目名称':'开关插座','预算分类':'家电','所属阶段':'安装','预算金额':1500,'实际花销':1500,'备注':'' }
+  );
   function ph(c,l){ var s="<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'><rect width='400' height='300' fill='"+c+"'/><text x='50%' y='52%' fill='#fff' font-size='26' text-anchor='middle' font-family='sans-serif'>"+l+"</text></svg>"; return 'data:image/svg+xml;utf8,'+encodeURIComponent(s); }
   var insp=[
     { '标题':'客厅中古柜参考','风格标签':['中古','侘寂'],'笔记':'胡桃木+藤编，暖光','描述':'中古风胡桃木储物柜 藤编门 暖色灯光','收藏':true,'图片':[{imageUrl:ph('#b89b7a','中古柜'),title:'中古柜',width:400,height:300}] },
     { '标题':'侘寂感玄关','风格标签':['侘寂','极简'],'笔记':'微水泥地面，留白','描述':'侘寂风玄关 微水泥 留白 自然光','收藏':false,'图片':[{imageUrl:ph('#c9bfa8','侘寂玄关'),title:'玄关',width:400,height:300}] },
     { '标题':'日式茶室角落','风格标签':['日式'],'笔记':'原木地台','描述':'日式茶室 原木 矮桌 竹帘','收藏':false,'图片':[] }
   ];
+  insp.push(
+    { '标题':'奶油风卧室','风格标签':['奶油','极简'],'笔记':'暖白+原木','描述':'奶油风卧室 暖白 原木 柔和光','收藏':false,'图片':[] }
+  );
   var profile={ '风格':'中古侘寂','面积':89,'户型':'三室两厅','总预算':180000,'装修方式':'半包','开工日期':d(-18) };
 
   return Promise.all([
@@ -627,7 +657,9 @@ function renderProgress(){
       return '<div class="sub-item" data-sp-bindable="database" data-sp-database-id="UnbBZTMp6FzsqUzsszm0An">'
         +'<input type="checkbox" '+(t['完成']?'checked':'')+' onchange="toggleTask(\''+t._id+'\',this.checked)" style="width:20px;height:20px;flex:none">'
         +'<div class="sub-main"><div class="sub-name'+(t['完成']?' done':'')+'">'+esc(t['名称'])+'</div>'
-        +'<div class="sub-dates">开始 '+esc(t['真实开始日']||'—')+' · 完成 '+esc(t['真实完成日']||'—')+'</div></div>'
+        +'<div class="sub-dates">开始 '+esc(t['真实开始日']||'—')+' · 完成 '+esc(t['真实完成日']||'—')+'</div>'
+        +(t['责任人']?'<div class="sub-owner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0" stroke-linecap="round"/></svg>责任人 '+esc(t['责任人'])+'</div>':'')
+        +'</div>'
         +'<button class="mini-btn" onclick="openTodoEditor(\''+t._id+'\')">编辑</button></div>';
     }).join('') : '<div class="sub-dates" style="padding:8px 0;color:var(--ink2)">该阶段暂无施工小项</div>';
     html+='<div class="phase'+(i===0?' open':'')+'">'
@@ -812,16 +844,16 @@ function rerender(){ renderOverview(); renderProgress(); renderTodos(); renderBu
 
 /* ===== 编辑器 ===== */
 function fieldHTML(dbId, obj){
-  var html='';
-  FIELDS[dbId].forEach(function(f){
-    if(dbId==='inspiration' && f==='图片') return; // 图片单独处理
-    var ty=SCHEMA[dbId][f]; var v=obj?obj[f]:'';
+  var key=dbKey(dbId); var html='';
+  FIELDS[key].forEach(function(f){
+    if(key==='inspiration' && f==='图片') return; // 图片单独处理
+    var ty=SCHEMA[key][f]; var v=obj?obj[f]:'';
     html+='<div class="field"><label>'+f+'</label>';
     if(ty==='select'){
-      var opts=OPTIONS[dbId][f]||[];
+      var opts=OPTIONS[key][f]||[];
       html+='<select data-f="'+f+'"><option value="">（不选）</option>'+opts.map(function(o){return '<option'+(v===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
     } else if(ty==='multi_select'){
-      var opts2=OPTIONS[dbId][f]||[]; var sel=Array.isArray(v)?v:[];
+      var opts2=OPTIONS[key][f]||[]; var sel=Array.isArray(v)?v:[];
       html+='<div class="checks" data-f="'+f+'">'+opts2.map(function(o){return '<span class="chk'+(sel.includes(o)?' on':'')+'" data-v="'+o+'">'+o+'</span>';}).join('')+'</div>';
     } else if(ty==='date'){
       html+='<input type="date" data-f="'+f+'" value="'+(v||'')+'">';
@@ -837,9 +869,9 @@ function fieldHTML(dbId, obj){
   return html;
 }
 function readForm(dbId){
-  var obj={}; var modal=document.getElementById('modal');
+  var key=dbKey(dbId); var obj={}; var modal=document.getElementById('modal');
   modal.querySelectorAll('[data-f]').forEach(function(el){
-    var f=el.getAttribute('data-f'); var ty=SCHEMA[dbId][f];
+    var f=el.getAttribute('data-f'); var ty=SCHEMA[key][f];
     if(ty==='multi_select'){
       var sel=[]; el.querySelectorAll('.chk.on').forEach(function(c){ sel.push(c.getAttribute('data-v')); }); obj[f]=sel;
     } else if(ty==='checkbox'){ obj[f]=el.checked; }
@@ -976,6 +1008,7 @@ function backupArea(){
     +'<div class="field"><button class="btn btn-ghost" style="width:100%" onclick="exportBudgetCSV()">导出预算 CSV（Excel 编辑）</button></div>'
     +'<div class="field"><label>导入 JSON 恢复（覆盖当前数据）</label><input type="file" id="impJSON" accept=".json"></div>'
     +'<div class="field"><label>导入预算 CSV（按项目名称匹配更新/新增）</label><input type="file" id="impCSV" accept=".csv"></div>'
+    +'<div class="field"><button class="btn btn-ghost" style="width:100%" onclick="reloadExamples()">重新载入示例（含测试数据）</button></div>'
     +'<div class="field"><button class="btn btn-danger" style="width:100%" onclick="clearExamples()">清空示例数据</button></div>'
     +'<div class="field"><button class="btn btn-danger" style="width:100%" onclick="clearAll()">清空全部数据（二次确认）</button></div>'
     +'<div class="modal-actions"><button class="btn btn-primary" onclick="closeModal()">关闭</button></div>';
@@ -1038,6 +1071,20 @@ function clearAll(){
     return Store.query(DB[key]).then(function(rows){ return Store.removeMany(DB[key], rows.map(function(r){return r._id;})); });
   });
   Promise.all(steps).then(function(){ state={tasks:[],budget:[],inspiration:[],profile:null}; rerender(); toast('已清空全部数据'); });
+}
+function reloadExamples(){
+  if(!confirm('将清空当前全部数据并重新载入内置示例（含测试数据），确定？')) return;
+  var steps=['tasks','budget','inspiration','profile'].map(function(key){
+    return Store.query(DB[key]).then(function(rows){ return Store.removeMany(DB[key], rows.map(function(r){return r._id;})); });
+  });
+  Promise.all(steps).then(function(){
+    exampleIds={tasks:[],budget:[],inspiration:[],profile:[]};
+    return seedExamples();
+  }).then(function(){
+    localStorage.setItem('wb_reno_examples', JSON.stringify(exampleIds));
+    localStorage.setItem('wb_reno_initialized','1');
+    return loadAll();
+  }).then(function(){ rerender(); closeModal(); toast('已重新载入示例'); });
 }
 
 /* ===== 导航 ===== */
