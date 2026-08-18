@@ -13,21 +13,24 @@ const path = require('path');
 const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 const DIR = __dirname;
-const HTML_FILE = path.join(DIR, '装修工作台.html');
-const COLLS = ['profile', 'tasks', 'budget', 'inspiration'];
+const HTML_FILE = path.join(DIR, '..', '装修工作台.html');   // 服务根目录最新版（含 api 模式），单源避免分叉
+const TOKEN = process.env.RENO_TOKEN || '';   // 设了则所有 /api 请求需带 x-reno-token，否则公开可写
+const COLLS = ['profile', 'tasks', 'budget', 'inspiration', 'budgetcfg'];
 
 // 与页面 FIELDS / SCHEMA 保持一致
 const FIELDS = {
   profile: ['风格','面积','户型','总预算','装修方式','开工日期'],
   tasks: ['名称','阶段','优先级','分类','责任人','真实开始日','真实完成日','截止日','完成','备注'],
   budget: ['项目名称','预算分类','所属阶段','预算金额','实际花销','备注'],
-  inspiration: ['标题','描述','风格标签','笔记','图片','收藏']
+  inspiration: ['标题','描述','风格标签','笔记','图片','收藏'],
+  budgetcfg: ['维度','名称','预算金额']
 };
 const TYPES = {
   profile: {风格:'text',面积:'number',户型:'text',总预算:'number',装修方式:'text',开工日期:'date'},
   tasks: {名称:'text',阶段:'text',优先级:'text',分类:'text',责任人:'text',真实开始日:'date',真实完成日:'date',截止日:'date',完成:'bool',备注:'text'},
   budget: {项目名称:'text',预算分类:'text',所属阶段:'text',预算金额:'number',实际花销:'number',备注:'text'},
-  inspiration: {标题:'text',描述:'text',风格标签:'array',笔记:'text',图片:'array',收藏:'bool'}
+  inspiration: {标题:'text',描述:'text',风格标签:'array',笔记:'text',图片:'array',收藏:'bool'},
+  budgetcfg: {维度:'text',名称:'text',预算金额:'number'}
 };
 
 function genId(){ return 'rec_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
@@ -60,12 +63,15 @@ function seedData(){
     { _id:genId(), '项目名称':'水电材料','预算分类':'主材','所属阶段':'水电','预算金额':9000,'实际花销':10500,'备注':'线管加量' },
     { _id:genId(), '项目名称':'全屋窗帘','预算分类':'软装','所属阶段':'软装','预算金额':4000,'实际花销':3500,'备注':'' },
     { _id:genId(), '项目名称':'中央空调','预算分类':'家电','所属阶段':'安装','预算金额':20000,'实际花销':20000,'备注':'' },
-    { _id:genId(), '项目名称':'墙面油漆','预算分类':'硬装','所属阶段':'油漆','预算金额':6000,'实际花销':5500,'备注':'' }
+    { _id:genId(), '项目名称':'墙面油漆','预算分类':'硬装','所属阶段':'油漆','预算金额':6000,'实际花销':5500,'备注':'' },
+    { _id:genId(), '项目名称':'瓷砖铺贴人工','预算分类':'人工','所属阶段':'泥木','预算金额':6000,'实际花销':5800,'备注':'含美缝' },
+    { _id:genId(), '项目名称':'开关插座','预算分类':'家电','所属阶段':'安装','预算金额':1500,'实际花销':1500,'备注':'' }
   ];
   const inspiration = [
     { _id:genId(), '标题':'客厅中古柜参考','描述':'中古风胡桃木储物柜 藤编门 暖色灯光','风格标签':['中古','侘寂'],'笔记':'胡桃木+藤编，暖光','图片':[{imageUrl:ph('#b89b7a','中古柜'),title:'中古柜',width:400,height:300}],'收藏':true },
     { _id:genId(), '标题':'侘寂感玄关','描述':'侘寂风玄关 微水泥 留白 自然光','风格标签':['侘寂','极简'],'笔记':'微水泥地面，留白','图片':[{imageUrl:ph('#c9bfa8','侘寂玄关'),title:'玄关',width:400,height:300}],'收藏':false },
-    { _id:genId(), '标题':'日式茶室角落','描述':'日式茶室 原木 矮桌 竹帘','风格标签':['日式'],'笔记':'原木地台','图片':[],'收藏':false }
+    { _id:genId(), '标题':'日式茶室角落','描述':'日式茶室 原木 矮桌 竹帘','风格标签':['日式'],'笔记':'原木地台','图片':[],'收藏':false },
+    { _id:genId(), '标题':'奶油风卧室','描述':'奶油风卧室 暖白 原木 柔和光','风格标签':['奶油','极简'],'笔记':'暖白+原木','图片':[],'收藏':false }
   ];
   const profile = [ { _id:genId(), '风格':'中古侘寂','面积':89,'户型':'三室两厅','总预算':180000,'装修方式':'半包','开工日期':dd(-18) } ];
   return { profile, tasks, budget, inspiration };
@@ -172,14 +178,35 @@ function readBody(req, cap){
 function serveHTML(res){
   fs.readFile(HTML_FILE,(err,buf)=>{
     if(err){ res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'}); return res.end('HTML 文件未找到：'+HTML_FILE); }
-    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); res.end(buf);
+    var html=buf.toString('utf8');
+    // 注入 api 模式标记，让页面经本服务访问时走 /api 读写 CSV
+    var marker='<script>window.__RENO_API__=true;</script>';
+    if(html.indexOf('</head>')>=0) html=html.replace('</head>', marker+'\n</head>');
+    else if(html.indexOf('</body>')>=0) html=html.replace('</body>', marker+'\n</body>');
+    else html+=marker;
+    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); res.end(html);
   });
 }
+function deny(res){ res.writeHead(401,{'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'unauthorized'})); }
+function okToken(req){ return !TOKEN || req.headers['x-reno-token']===TOKEN; }
 function handleApi(req,res,u){
   const parts=u.pathname.split('/').filter(Boolean);
   if(parts[0]!=='api'){ res.writeHead(404); return res.end('not found'); }
+  // 清空并重新注入示例（对应页面“重新载入示例”）
+  if(parts[1]==='reset' && req.method==='POST'){
+    if(!okToken(req)) return deny(res);
+    const s=seedData(); data.profile=s.profile; data.tasks=s.tasks; data.budget=s.budget; data.inspiration=s.inspiration;
+    return persist().then(function(){ res.writeHead(200,{'Content-Type':'application/json'}); res.end('{"ok":true}'); });
+  }
+  // 清空全部（对应页面“清空示例 / 清空全部”）
+  if(parts[1]==='clear' && req.method==='DELETE'){
+    if(!okToken(req)) return deny(res);
+    data={ profile:[], tasks:[], budget:[], inspiration:[] };
+    return persist().then(function(){ res.writeHead(200,{'Content-Type':'application/json'}); res.end('{"ok":true}'); });
+  }
   const coll=parts[1]; const id=parts[2];
   if(!COLLS.includes(coll)){ res.writeHead(400,{'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'bad collection'})); }
+  if(!okToken(req)) return deny(res);
   if(req.method==='GET'){
     if(id){ const rec=(data[coll]||[]).find(r=>r._id===id); if(!rec){ res.writeHead(404,{'Content-Type':'application/json'}); return res.end(JSON.stringify({error:'not found'})); } res.writeHead(200,{'Content-Type':'application/json'}); return res.end(JSON.stringify(rec)); }
     res.writeHead(200,{'Content-Type':'application/json'}); return res.end(JSON.stringify(data[coll]||[]));
@@ -219,8 +246,9 @@ const server=http.createServer((req,res)=>{
   res.writeHead(404,{'Content-Type':'text/plain; charset=utf-8'}); res.end('Not found');
 });
 server.listen(PORT,HOST,()=>{
-  console.log('悠然装修工作台 本地服务已启动（数据存储：CSV 文件）');
+  console.log('悠然装修工作台 服务已启动（数据以 CSV 文件存储，多人共用同一份）');
   console.log('本机访问： http://localhost:'+PORT);
-  console.log('同一 WiFi 其他人： http://<你的内网IP>:'+PORT+'  （查内网 IP： ipconfig getifaddr en0）');
+  console.log('同一 WiFi / 内网其他人： http://<你的内网IP>:'+PORT+'  （查内网 IP： ipconfig getifaddr en0）');
   console.log('公网访问： 另开终端运行  cloudflared tunnel --url http://localhost:'+PORT);
+  console.log(TOKEN ? ('访问口令已启用（RENO_TOKEN），写操作需在请求头带 x-reno-token') : '未设访问口令（RENO_TOKEN 为空），任何能拿到链接的人都可读写，请仅发给信任的人');
 });

@@ -337,12 +337,17 @@
       </div>
       <div id="bOverAlert"></div>
       <div class="section-title">
+        <h3>预算设置</h3>
+        <button class="btn btn-ghost btn-sm" onclick="openBudgetSettings()"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>设置预算目标</button>
+      </div>
+      <div class="card" id="bSettingSummary" style="font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="section-title"><h3>阶段预算汇总</h3></div>
+      <div class="card" id="bPhaseView"></div>
+      <div class="section-title"><h3>分类预算汇总</h3></div>
+      <div class="card" id="bCatView"></div>
+      <div class="section-title">
         <h3>预算明细</h3>
         <div style="display:flex;gap:8px;align-items:center">
-          <div class="seg" id="bDimSeg">
-            <button class="on" data-dim="cat">按分类</button>
-            <button data-dim="phase">按阶段</button>
-          </div>
           <button class="btn btn-primary btn-sm" onclick="openBudgetEditor()"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新增明细</button>
         </div>
       </div>
@@ -352,8 +357,6 @@
           <tbody id="budgetBody"></tbody>
         </table>
       </div>
-      <div class="section-title"><h3 id="bDimTitle">分类汇总</h3></div>
-      <div class="card" id="bDimView"></div>
     </section>
 
     <!-- 灵感库 -->
@@ -389,14 +392,16 @@ var DB = {
   profile: 'akIo0pcgrvmxQ19M6jzNMe',
   tasks:   'UnbBZTMp6FzsqUzsszm0An',
   budget:  'AJuMSspTPnpN3h8xZfAzcN',
-  inspiration: 'YsYGf5Q8viu0TQNU1P2cpM'
+  inspiration: 'YsYGf5Q8viu0TQNU1P2cpM',
+  budgetcfg: 'RenoBudgetCfg'
 };
 var PHASES = ['设计','拆改','水电','泥木','油漆','安装','软装','完工'];
 var SCHEMA = {
   tasks: { '名称':'text','阶段':'select','优先级':'select','分类':'text','责任人':'text','截止日':'date','真实开始日':'date','真实完成日':'date','完成':'checkbox','备注':'text' },
   budget: { '项目名称':'text','预算分类':'select','所属阶段':'select','预算金额':'number','实际花销':'number','备注':'text' },
   inspiration: { '标题':'text','风格标签':'multi_select','笔记':'text','描述':'text','图片':'image','收藏':'checkbox' },
-  profile: { '风格':'text','面积':'number','户型':'text','总预算':'number','装修方式':'select','开工日期':'date' }
+  profile: { '风格':'text','面积':'number','户型':'text','总预算':'number','装修方式':'select','开工日期':'date' },
+  budgetcfg: { '维度':'text','名称':'text','预算金额':'number' }
 };
 var OPTIONS = {
   tasks: { '阶段':PHASES, '优先级':['P0','P1','P2'] },
@@ -404,7 +409,7 @@ var OPTIONS = {
   inspiration: { '风格标签':['侘寂','中古','极简','北欧','日式','法式','现代','工业','美式','新中式'] },
   profile: { '装修方式':['全包','半包','清包','DIY'] }
 };
-var FIELDS = { tasks:Object.keys(SCHEMA.tasks), budget:Object.keys(SCHEMA.budget), inspiration:Object.keys(SCHEMA.inspiration), profile:Object.keys(SCHEMA.profile) };
+var FIELDS = { tasks:Object.keys(SCHEMA.tasks), budget:Object.keys(SCHEMA.budget), inspiration:Object.keys(SCHEMA.inspiration), profile:Object.keys(SCHEMA.profile), budgetcfg:Object.keys(SCHEMA.budgetcfg) };
 // databaseId -> schema key（DB 存的是真实资料库 ID，SCHEMA/FIELDS/OPTIONS 用简短 key）
 var DB_KEY = {}; Object.keys(DB).forEach(function(k){ DB_KEY[DB[k]]=k; });
 function dbKey(id){ return DB_KEY[id] || id; }
@@ -412,44 +417,94 @@ function dbKey(id){ return DB_KEY[id] || id; }
 /* ===== 统一存储层：在线(SDK) / 离线(localStorage) ===== */
 /* 在线模式下 db 由平台注入 __SMART_PAGE__.database；databaseId 必须字面量（lint DSDK002） */
 var db = (window.__SMART_PAGE__ && window.__SMART_PAGE__.database) ? window.__SMART_PAGE__.database : null;
+
+/* ===== api 模式辅助（经 server.js 读写 CSV）===== */
+var RENO_TOKEN = (localStorage.getItem('wb_reno_token')||'');
+function apiHeaders(extra){
+  var h=extra||{}; h['Content-Type']='application/json';
+  if(RENO_TOKEN) h['x-reno-token']=RENO_TOKEN;
+  return h;
+}
+function apiFetch(url, opts){
+  opts=opts||{}; opts.headers=apiHeaders(opts.headers);
+  return fetch(url, opts).then(function(res){
+    if(res.status===401){
+      var tk=window.prompt('该装修工作台需要访问口令（联系管理员获取）：');
+      if(tk===null) return Promise.reject(new Error('缺少访问口令'));
+      RENO_TOKEN=tk; localStorage.setItem('wb_reno_token', tk);
+      opts.headers=apiHeaders(opts.headers);
+      return fetch(url, opts);
+    }
+    if(!res.ok) return Promise.reject(new Error('请求失败('+res.status+')'));
+    return res;
+  });
+}
+// 把 toProps 产生的 PropertyValue 结构还原为普通 {field:value}，供服务端落盘
+function plainProps(dbId, props){
+  var key=dbKey(dbId); var t=SCHEMA[key]; var out={};
+  FIELDS[key].forEach(function(f){
+    if(!(f in props)) return;
+    var v=props[f];
+    if(v && typeof v==='object' && !Array.isArray(v)){
+      if('text' in v) v=v.text;
+      else if('number' in v) v=v.number;
+      else if('select' in v) v=v.select;
+      else if('checkbox' in v) v=v.checkbox;
+      else if('date' in v) v=v.date;
+      else if('multi_select' in v) v=(v.multi_select||[]);
+      else if('image' in v) v=(v.image&&v.image.images)||[];
+    }
+    out[f]=v;
+  });
+  return out;
+}
+
 var Store = {
-  mode: db ? 'online' : 'offline',
-  init:function(){ this.mode = db ? 'online' : 'offline'; },
+  mode: db ? 'online' : (window.__RENO_API__ ? 'api' : 'offline'),
+  init:function(){ this.mode = db ? 'online' : (window.__RENO_API__ ? 'api' : 'offline'); },
   _ls:function(dbId){ try{ return JSON.parse(localStorage.getItem('wb_reno_'+dbId)||'[]'); }catch(e){ return []; } },
   _sv:function(dbId,a){ localStorage.setItem('wb_reno_'+dbId, JSON.stringify(a)); },
   query:function(dbId){
+    if(this.mode==='api'){ return apiFetch('/api/'+dbKey(dbId)).then(function(r){ return r.json(); }); }
     if(this.mode!=='online') return Promise.resolve(this._ls(dbId));
     var p;
     if(dbId==='akIo0pcgrvmxQ19M6jzNMe') p=db.query({ databaseId:'akIo0pcgrvmxQ19M6jzNMe', pageSize:200 });
     else if(dbId==='UnbBZTMp6FzsqUzsszm0An') p=db.query({ databaseId:'UnbBZTMp6FzsqUzsszm0An', pageSize:200 });
     else if(dbId==='AJuMSspTPnpN3h8xZfAzcN') p=db.query({ databaseId:'AJuMSspTPnpN3h8xZfAzcN', pageSize:200 });
+    else if(dbId==='RenoBudgetCfg') p=Promise.resolve({results:[]});
     else p=db.query({ databaseId:'YsYGf5Q8viu0TQNU1P2cpM', pageSize:200 });
     return p.then(function(r){ return (r&&r.results)||[]; });
   },
   add:function(dbId, props){
+    if(this.mode==='api'){ return apiFetch('/api/'+dbKey(dbId), {method:'POST', body:JSON.stringify(plainProps(dbId,props))}).then(function(r){ return r.json(); }).then(function(o){ return o&&o.id; }); }
     if(this.mode!=='online'){ var rec={ _id:genId() }; for(var k in props){ rec[k]=props[k]; } var a=this._ls(dbId); a.push(rec); this._sv(dbId,a); return Promise.resolve(rec._id); }
     var p;
     if(dbId==='akIo0pcgrvmxQ19M6jzNMe') p=db.addRecord({ databaseId:'akIo0pcgrvmxQ19M6jzNMe', properties:props });
     else if(dbId==='UnbBZTMp6FzsqUzsszm0An') p=db.addRecord({ databaseId:'UnbBZTMp6FzsqUzsszm0An', properties:props });
     else if(dbId==='AJuMSspTPnpN3h8xZfAzcN') p=db.addRecord({ databaseId:'AJuMSspTPnpN3h8xZfAzcN', properties:props });
+    else if(dbId==='RenoBudgetCfg') p=Promise.resolve({id:'cfg'});
     else p=db.addRecord({ databaseId:'YsYGf5Q8viu0TQNU1P2cpM', properties:props });
     return p.then(function(r){ return r&&r.id; });
   },
   update:function(dbId, id, props){
+    if(this.mode==='api'){ return apiFetch('/api/'+dbKey(dbId)+'/'+id, {method:'PUT', body:JSON.stringify(plainProps(dbId,props))}).then(function(){ return true; }); }
     if(this.mode!=='online'){ var a=this._ls(dbId), f=false; for(var i=0;i<a.length;i++){ if(a[i]._id===id){ for(var k in props){ a[i][k]=props[k]; } f=true; break; } } if(f) this._sv(dbId,a); return Promise.resolve(true); }
     var p;
     if(dbId==='akIo0pcgrvmxQ19M6jzNMe') p=db.updateRecord({ databaseId:'akIo0pcgrvmxQ19M6jzNMe', recordId:id, properties:props });
     else if(dbId==='UnbBZTMp6FzsqUzsszm0An') p=db.updateRecord({ databaseId:'UnbBZTMp6FzsqUzsszm0An', recordId:id, properties:props });
     else if(dbId==='AJuMSspTPnpN3h8xZfAzcN') p=db.updateRecord({ databaseId:'AJuMSspTPnpN3h8xZfAzcN', recordId:id, properties:props });
+    else if(dbId==='RenoBudgetCfg') p=Promise.resolve();
     else p=db.updateRecord({ databaseId:'YsYGf5Q8viu0TQNU1P2cpM', recordId:id, properties:props });
     return p.then(function(){ return true; });
   },
   remove:function(dbId, id){
+    if(this.mode==='api'){ return apiFetch('/api/'+dbKey(dbId)+'/'+id, {method:'DELETE'}).then(function(){ return true; }); }
     if(this.mode!=='online'){ var a=this._ls(dbId).filter(function(r){ return r._id!==id; }); this._sv(dbId,a); return Promise.resolve(true); }
     var p;
     if(dbId==='akIo0pcgrvmxQ19M6jzNMe') p=db.deleteRecord({ databaseId:'akIo0pcgrvmxQ19M6jzNMe', recordId:id });
     else if(dbId==='UnbBZTMp6FzsqUzsszm0An') p=db.deleteRecord({ databaseId:'UnbBZTMp6FzsqUzsszm0An', recordId:id });
     else if(dbId==='AJuMSspTPnpN3h8xZfAzcN') p=db.deleteRecord({ databaseId:'AJuMSspTPnpN3h8xZfAzcN', recordId:id });
+    else if(dbId==='RenoBudgetCfg') p=Promise.resolve();
     else p=db.deleteRecord({ databaseId:'YsYGf5Q8viu0TQNU1P2cpM', recordId:id });
     return p.then(function(){ return true; });
   },
@@ -509,8 +564,8 @@ function toProps(dbId, obj){
 }
 
 /* ===== 状态 ===== */
-var state = { tasks:[], budget:[], inspiration:[], profile:null };
-var exampleIds = { tasks:[], budget:[], inspiration:[], profile:[] };
+var state = { tasks:[], budget:[], inspiration:[], profile:null, budgetcfg:[] };
+var exampleIds = { tasks:[], budget:[], inspiration:[], profile:[], budgetcfg:[] };
 
 /* ===== 示例数据（首次为空时注入；含 1 条逾期）===== */
 function seedExamples(){
@@ -576,7 +631,8 @@ function loadAll(){
     Store.query(DB.tasks).then(function(r){ state.tasks=r.map(function(x){return normRow(DB.tasks,x);}); }),
     Store.query(DB.budget).then(function(r){ state.budget=r.map(function(x){return normRow(DB.budget,x);}); }),
     Store.query(DB.inspiration).then(function(r){ state.inspiration=r.map(function(x){return normRow(DB.inspiration,x);}); }),
-    Store.query(DB.profile).then(function(r){ state.profile=r.length? normRow(DB.profile,r[0]) : null; })
+    Store.query(DB.profile).then(function(r){ state.profile=r.length? normRow(DB.profile,r[0]) : null; }),
+    Store.query(DB.budgetcfg).then(function(r){ state.budgetcfg=r.map(function(x){return normRow(DB.budgetcfg,x);}); })
   ]);
 }
 
@@ -775,7 +831,6 @@ function renderTodos(){
 }
 
 /* ===== 渲染：预算 ===== */
-var bDim='cat';
 function renderBudget(){
   var total=state.budget.reduce(function(s,b){return s+(Number(b['预算金额'])||0);},0);
   var spent=state.budget.reduce(function(s,b){return s+(Number(b['实际花销'])||0);},0);
@@ -803,46 +858,60 @@ function renderBudget(){
         +'<td><div class="row-actions"><button class="mini-btn" onclick="openBudgetEditor(\''+b._id+'\')">编辑</button><button class="mini-btn" onclick="delRecord(\'budget\',\''+b._id+'\')">删</button></div></td></tr>';
     }).join('');
   }
-  renderBDim();
+  renderSettingSummary();
+  renderDimSummary('phase','bPhaseView');
+  renderDimSummary('cat','bCatView');
 }
-function renderBDim(){
-  var dimKey = bDim==='cat'?'预算分类':'所属阶段';
-  document.getElementById('bDimTitle').textContent=(bDim==='cat'?'分类':'阶段')+'汇总';
-  var map={};
+function renderSettingSummary(){
+  var ph=state.budgetcfg.filter(function(c){return c['维度']==='phase';}).length;
+  var ca=state.budgetcfg.filter(function(c){return c['维度']==='cat';}).length;
+  var el=document.getElementById('bSettingSummary');
+  if(ph+ca===0){ el.innerHTML='尚未设置预算目标。点击「设置预算目标」可分别按<b>阶段</b>与<b>分类</b>配置上限；下方汇总会实时按目标统计，未归类的支出单独计入「未分类」。'; return; }
+  el.innerHTML='已设置目标：阶段 <b>'+ph+'</b> 项 · 分类 <b>'+ca+'</b> 项。下方按目标实时统计，未归类支出计入「未分类」。';
+}
+// dim: 'phase' | 'cat'；目标优先来自预算设置(budgetcfg)，若未设置则按预算明细自动汇总
+function renderDimSummary(dim, elId){
+  var field = dim==='phase'?'所属阶段':'预算分类';
+  var cfg=state.budgetcfg.filter(function(c){return c['维度']===dim;});
+  var tgt={}, spent={}, uncat=0, auto=false;
   state.budget.forEach(function(b){
-    var k=b[dimKey]||'未分类'; if(!map[k]) map[k]={budget:0,spent:0};
-    map[k].budget+=(Number(b['预算金额'])||0); map[k].spent+=(Number(b['实际花销'])||0);
+    var v=b[field], sp=Number(b['实际花销'])||0, bg=Number(b['预算金额'])||0;
+    if(v){ spent[v]=(spent[v]||0)+sp; tgt[v]=(tgt[v]||0)+bg; } else { uncat+=sp; }
   });
-  var keys=Object.keys(map);
-  var html='<div class="bdim">'+keys.map(function(k){
-    var m=map[k];
-    var rate=m.budget?Math.round(m.spent/m.budget*100):(m.spent?100:0);
-    var over=m.spent>m.budget || (m.budget===0 && m.spent>0);
-    var greenW,redW;
-    if(over){
-      // 超支时整体缩放，使绿色+红色完整显示在轨道内，避免越界
-      greenW=Math.round(100000/rate)/10;
-      redW=Math.round((rate-100)*1000/rate)/10;
-    } else {
-      greenW=rate; redW=0;
-    }
-    var greenRadius=over?'999px 0 0 999px':'999px';
-    return '<div class="bdim-row">'
-      +'<div class="bdim-col-name">'+esc(k)+'</div>'
-      +'<div class="bdim-col-bar">'
-      +'<div class="bdim-ruler"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>'
-      +'<div class="bdim-track">'
-      +'<div class="bdim-green" style="width:'+greenW+'%;border-radius:'+greenRadius+'"></div>'
-      +(over?'<div class="bdim-red" style="width:'+redW+'%"></div>':'')
-      +'</div></div>'
-      +'<div class="bdim-col-num">'
-      +(over?'<span style="color:#e03030">'+money(m.spent)+'</span>':money(m.spent))
-      +' / '+money(m.budget)+' · '
-      +(over?'<span style="color:#e03030">'+rate+'%</span>':rate+'%')
-      +'</div>'
-      +'</div>';
-  }).join('')+'</div>';
-  document.getElementById('bDimView').innerHTML=html||'<div class="empty">暂无数据</div>';
+  // 若用户已设置预算目标，以目标为准（按目标键值列出）；否则按明细自动汇总
+  if(cfg.length){
+    tgt={}; cfg.forEach(function(c){ tgt[c['名称']]=Number(c['预算金额'])||0; });
+  } else {
+    auto=true;
+  }
+  var keys=Object.keys(tgt);
+  var rows=keys.map(function(k){ return bdimRow(k, tgt[k], spent[k]||0, false); });
+  if(uncat>0) rows.push(bdimRow('未分类', 0, uncat, true));
+  var html = rows.length ? '<div class="bdim">'+rows.join('')+'</div>'
+    : '<div class="empty">暂无'+(dim==='phase'?'阶段':'分类')+'预算数据</div>';
+  document.getElementById(elId).innerHTML=html;
+}
+function bdimRow(name, target, spent, isUncat){
+  var rate = target ? Math.round(spent/target*100) : (spent?100:0);
+  var over = spent>target || (target===0 && spent>0);
+  var greenW, redW;
+  if(over){ greenW=Math.round(100000/rate)/10; redW=Math.round((rate-100)*1000/rate)/10; }
+  else { greenW=rate; redW=0; }
+  var greenRadius=over?'999px 0 0 999px':'999px';
+  var tgtText = (isUncat||target===0) ? '—' : money(target);
+  var pct = (target && target>0) ? (over?'<span style="color:#e03030">'+rate+'%</span>':rate+'%') : '';
+  return '<div class="bdim-row">'
+    +'<div class="bdim-col-name">'+esc(name)+'</div>'
+    +'<div class="bdim-col-bar">'
+    +'<div class="bdim-ruler"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>'
+    +'<div class="bdim-track">'
+    +'<div class="bdim-green" style="width:'+greenW+'%;border-radius:'+greenRadius+'"></div>'
+    +(over?'<div class="bdim-red" style="width:'+redW+'%"></div>':'')
+    +'</div></div>'
+    +'<div class="bdim-col-num">'
+    +(over?'<span style="color:#e03030">'+money(spent)+'</span>':money(spent))
+    +' / '+tgtText+(pct?' · '+pct:'')
+    +'</div></div>';
 }
 function showOver(){
   var over=state.budget.filter(function(b){return (Number(b['实际花销'])||0)>(Number(b['预算金额'])||0);});
@@ -850,6 +919,71 @@ function showOver(){
     return '<tr><td>'+esc(b['项目名称'])+'</td><td>'+esc(b['预算分类'])+'</td><td class="num">'+money(b['预算金额'])+'</td><td class="num" style="color:var(--red);font-weight:700">'+money(b['实际花销'])+'</td><td class="num" style="color:var(--red)">+'+money(ex)+'</td></tr>';
   }).join('');
   openModal('超支明细（'+over.length+' 项）','<table class="tbl"><thead><tr><th>项目名称</th><th>分类</th><th class="num">预算</th><th class="num">实际</th><th class="num">超支</th></tr></thead><tbody>'+rows+'</tbody></table><div class="modal-actions" style="margin-top:14px"><button class="btn btn-primary" onclick="closeModal()">知道了</button></div>');
+}
+
+/* ===== 预算设置（阶段 / 分类 分开配置上限）===== */
+var _cfgDraft=[];
+function openBudgetSettings(){
+  _cfgDraft = state.budgetcfg.map(function(c){ return { _id:c._id, '维度':c['维度'], '名称':c['名称'], '预算金额':Number(c['预算金额'])||0 }; });
+  cfgRender();
+  openModal('预算设置（阶段 / 分类 分开配置）',
+    '<div id="bSettingsBody"></div>'
+    +'<div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal()">取消</button><button class="btn btn-primary" id="saveCfg">保存</button></div>');
+  document.getElementById('saveCfg').onclick=function(){
+    var body=document.getElementById('bSettingsBody');
+    _cfgDraft.forEach(function(c){
+      var sel=body.querySelector('.cfg-name[data-id="'+c._id+'"]'); var amt=body.querySelector('.cfg-amt[data-id="'+c._id+'"]');
+      if(sel) c['名称']=sel.value; if(amt) c['预算金额']=Number(amt.value)||0;
+    });
+    saveBudgetCfg(_cfgDraft).then(function(){
+      state.budgetcfg=_cfgDraft.map(function(c){ return { _id:c._id, '维度':c['维度'], '名称':c['名称'], '预算金额':c['预算金额'] }; });
+      closeModal(); rerender(); toast('预算设置已保存');
+    });
+  };
+}
+function cfgRender(){
+  var body=document.getElementById('bSettingsBody'); if(!body) return;
+  function rowsHTML(dim){
+    var opts = dim==='phase'? PHASES.concat(['通用']) : OPTIONS.budget['预算分类'];
+    var list=_cfgDraft.filter(function(c){return c['维度']===dim;});
+    if(!list.length) return '<div class="pb-empty" style="padding:2px 0 6px">暂无，点「+ 添加」或从现有汇总生成</div>';
+    return list.map(function(c){
+      var sel='<select class="cfg-name" data-id="'+c._id+'" style="max-width:170px">'+opts.map(function(o){return '<option'+(o===c['名称']?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
+      return '<div style="display:flex;gap:8px;align-items:center;margin:6px 0">'
+        + sel
+        + '<input class="cfg-amt" data-id="'+c._id+'" type="number" min="0" step="100" value="'+c['预算金额']+'" style="max-width:150px">'
+        + '<span style="color:var(--ink2);font-size:13px">元</span>'
+        + '<button class="mini-btn" onclick="cfgDel(\''+c._id+'\')">删</button></div>';
+    }).join('');
+  }
+  body.innerHTML =
+    '<div style="font-weight:600;margin:4px 0 2px">阶段预算目标</div>'+rowsHTML('phase')
+    + '<div style="display:flex;gap:8px;margin:4px 0 14px"><button class="btn btn-ghost btn-sm" onclick="cfgAdd(\'phase\')">+ 添加阶段</button><button class="btn btn-ghost btn-sm" onclick="cfgGen(\'phase\')">从现有汇总生成</button></div>'
+    + '<div style="font-weight:600;margin:4px 0 2px">分类预算目标</div>'+rowsHTML('cat')
+    + '<div style="display:flex;gap:8px;margin:4px 0 4px"><button class="btn btn-ghost btn-sm" onclick="cfgAdd(\'cat\')">+ 添加分类</button><button class="btn btn-ghost btn-sm" onclick="cfgGen(\'cat\')">从现有汇总生成</button></div>';
+}
+function cfgAdd(dim){ _cfgDraft.push({ _id:genId(), '维度':dim, '名称':'', '预算金额':0 }); cfgRender(); }
+function cfgDel(id){ _cfgDraft=_cfgDraft.filter(function(c){return c._id!==id;}); cfgRender(); }
+function cfgGen(dim){
+  var field = dim==='phase'?'所属阶段':'预算分类';
+  var opts = dim==='phase'? PHASES.concat(['通用']) : OPTIONS.budget['预算分类'];
+  var tgt={}; opts.forEach(function(o){ tgt[o]=0; });
+  state.budget.forEach(function(b){ var v=b[field]; if(v && (v in tgt)) tgt[v]+=(Number(b['预算金额'])||0); });
+  opts.forEach(function(o){
+    var ex=_cfgDraft.filter(function(c){return c['维度']===dim && c['名称']===o;})[0];
+    if(ex) ex['预算金额']=tgt[o];
+    else _cfgDraft.push({ _id:genId(), '维度':dim, '名称':o, '预算金额':tgt[o] });
+  });
+  cfgRender();
+}
+function saveBudgetCfg(draft){
+  var existing = state.budgetcfg.map(function(c){return c._id;}).filter(Boolean);
+  return Store.removeMany(DB.budgetcfg, existing).then(function(){
+    return Promise.all(draft.map(function(c){
+      var rec={ '维度':c['维度'], '名称':c['名称'], '预算金额':Number(c['预算金额'])||0 };
+      return Store.add(DB.budgetcfg, toProps(DB.budgetcfg, rec)).then(function(id){ if(id) c._id=id; });
+    }));
+  });
 }
 
 /* ===== 渲染：灵感 ===== */
@@ -1102,6 +1236,12 @@ function importBudgetCSV(file){
   rd.readAsText(file);
 }
 function clearExamples(){
+  if(Store.mode==='api'){
+    if(!confirm('将清空云端全部数据（示例与你的数据都会删除），确定？')) return;
+    apiFetch('/api/clear',{method:'DELETE'}).then(function(){ return loadAll(); }).then(function(){ rerender(); toast('已清空云端数据'); })
+      .catch(function(e){ toast('操作失败：'+(e&&e.message||e)); });
+    return;
+  }
   if(!confirm('仅清空初始示例数据（你后续添加的保留），确定？')) return;
   var steps=[];
   ['tasks','budget','inspiration','profile'].forEach(function(key){
@@ -1112,13 +1252,23 @@ function clearExamples(){
 function clearAll(){
   if(!confirm('⚠ 将清空全部数据且不可恢复，确定？')) return;
   if(!confirm('再次确认：所有待办、预算、灵感、档案都会删除，确定清空？')) return;
+  if(Store.mode==='api'){
+    apiFetch('/api/clear',{method:'DELETE'}).then(function(){ state={tasks:[],budget:[],inspiration:[],profile:null}; rerender(); toast('已清空全部数据'); })
+      .catch(function(e){ toast('操作失败：'+(e&&e.message||e)); });
+    return;
+  }
   var steps=['tasks','budget','inspiration','profile'].map(function(key){
     return Store.query(DB[key]).then(function(rows){ return Store.removeMany(DB[key], rows.map(function(r){return r._id;})); });
   });
   Promise.all(steps).then(function(){ state={tasks:[],budget:[],inspiration:[],profile:null}; rerender(); toast('已清空全部数据'); });
 }
 function reloadExamples(){
-  if(!confirm('将清空当前全部数据并重新载入内置示例（含测试数据），确定？')) return;
+  if(!confirm('将清空云端当前全部数据并重新载入内置示例（含测试数据），确定？')) return;
+  if(Store.mode==='api'){
+    apiFetch('/api/reset',{method:'POST'}).then(function(){ return loadAll(); }).then(function(){ rerender(); closeModal(); toast('已重新载入示例'); })
+      .catch(function(e){ toast('载入失败：'+(e&&e.message||e)); });
+    return;
+  }
   var steps=['tasks','budget','inspiration','profile'].map(function(key){
     return Store.query(DB[key]).then(function(rows){ return Store.removeMany(DB[key], rows.map(function(r){return r._id;})); });
   });
@@ -1144,14 +1294,14 @@ document.querySelectorAll('[data-page]').forEach(function(b){ b.onclick=function
 document.getElementById('todoTypeSeg').addEventListener('click',function(e){ if(e.target.dataset.type){ this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');}); e.target.classList.add('on'); todoFilter.type=e.target.dataset.type; renderTodos(); } });
 document.getElementById('todoPriFilter').addEventListener('change',function(){ todoFilter.pri=this.value; renderTodos(); });
 document.getElementById('todoCatFilter').addEventListener('change',function(){ todoFilter.cat=this.value; renderTodos(); });
-document.getElementById('bDimSeg').addEventListener('click',function(e){ if(e.target.dataset.dim){ this.querySelectorAll('button').forEach(function(x){x.classList.remove('on');}); e.target.classList.add('on'); bDim=e.target.dataset.dim; renderBDim(); } });
 document.getElementById('inspFilter').addEventListener('change',renderInsp);
 document.getElementById('inspFavOnly').addEventListener('change',renderInsp);
 
 /* ===== 启动 ===== */
 function setSync(mode){
   var badge=document.getElementById('syncBadge'); var txt=document.getElementById('syncText');
-  if(mode==='online'){ badge.className='sync online'; txt.textContent='已同步 · 在线'; }
+  if(mode==='api'){ badge.className='sync online'; txt.textContent='已连接 · 云端CSV'; }
+  else if(mode==='online'){ badge.className='sync online'; txt.textContent='已同步 · 在线'; }
   else { badge.className='sync offline'; txt.textContent='离线模式 · 本地存储'; }
 }
 function boot(){
@@ -1160,7 +1310,7 @@ function boot(){
   loadAll().then(function(){
     // 首次为空 → 注入示例
     var total=state.tasks.length+state.budget.length+state.inspiration.length+ (state.profile?1:0);
-    if(total===0 && !localStorage.getItem('wb_reno_initialized')){
+    if(Store.mode!=='api' && total===0 && !localStorage.getItem('wb_reno_initialized')){
       return seedExamples().then(function(){ localStorage.setItem('wb_reno_examples', JSON.stringify(exampleIds)); localStorage.setItem('wb_reno_initialized','1'); return loadAll(); });
     }
     localStorage.setItem('wb_reno_initialized','1');
